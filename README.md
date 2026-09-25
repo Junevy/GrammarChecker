@@ -116,4 +116,4 @@ go test ./...      # 单测（store 数据层 + api 处理器层，httptest 全�
 
 ## License
 
-[MIT](./LICENSE) © 2026 Junevy_COWAIN
+[MIT](./LICENSE) © 2026 Junevy
