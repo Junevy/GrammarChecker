@@ -1,0 +1,39 @@
+# 构建产物
+*.exe
+*.test
+*.out
+*.syso
+
+# 本地数据 —— 含 API Key 与个人数据，严禁提交
+*.db
+grammar.db
+grammar.db-wal
+grammar.db-shm
+grammar.db-journal
+
+# 前端验证依赖（playwright-core，仅本机 E2E 用）
+node_modules/
+package.json
+package-lock.json
+
+# 验证 / 调试临时产物
+_verify_tmp/
+app/vue/_verify_tmp/
+_*.tmp
+_*.js.tmp
+test-results/
+playwright-report/
+
+# WorkBuddy 工作区数据与个人工作日志
+.workbuddy/
+memory/
+
+# 设计参考稿（非交付物）
+app/base_style.html
+
+# 编辑器 / 系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
