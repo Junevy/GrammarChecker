@@ -4,6 +4,8 @@
 
 > 个人电脑本地部署：启动后监听 `127.0.0.1:8899`（仅本机回环），自动拉起浏览器，支持系统托盘常驻。
 
+<img width="1905" height="899" alt="image" src="https://github.com/user-attachments/assets/e951fce8-1f98-4ec4-86c4-3ef15cc15dff" />
+
 ## 功能
 
 ### 📝 检查
