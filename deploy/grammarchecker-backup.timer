@@ -1,0 +1,12 @@
+[Unit]
+Description=GrammarChecker 每日数据备份定时器
+
+[Timer]
+OnCalendar=daily
+# 关机期间错过的任务，开机后补跑一次（轻量云常在闲置时段休眠/重启）
+Persistent=true
+# 随机延迟，避免与其他定时任务同时抢磁盘 IO
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

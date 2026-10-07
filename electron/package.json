@@ -1,0 +1,81 @@
+{
+  "name": "grammarchecker-desktop",
+  "version": "1.0.0",
+  "description": "GrammarChecker 桌面壳（Electron）：拉起 Go 后端子进程，加载现有页面，布局零改动",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "backend": "node scripts/build-backend.js",
+    "backend:all": "node scripts/build-backend.js --all",
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "png2icons": "^2.0.1"
+  },
+  "build": {
+    "appId": "com.grammarchecker.desktop",
+    "productName": "GrammarChecker",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "assets/**",
+      "icon.ico",
+      "icon.png"
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        "nsis"
+      ],
+      "extraResources": [
+        {
+          "from": "bin",
+          "to": "bin",
+          "filter": [
+            "grammarchecker-win32-*"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "icon": "icon.png",
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ],
+      "extraResources": [
+        {
+          "from": "bin",
+          "to": "bin",
+          "filter": [
+            "grammarchecker-darwin-*"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "icon.png",
+      "category": "Utility",
+      "target": [
+        "AppImage"
+      ],
+      "extraResources": [
+        {
+          "from": "bin",
+          "to": "bin",
+          "filter": [
+            "grammarchecker-linux-*"
+          ]
+        }
+      ]
+    }
+  }
+}

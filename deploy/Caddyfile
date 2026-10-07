@@ -1,0 +1,36 @@
+# GrammarChecker 反向代理配置（无域名 · IP 直连场景）
+#
+# 安装：本文件放到 /etc/caddy/Caddyfile，然后 systemctl reload caddy
+#
+# 为什么没有域名也要上 TLS：
+#   登录口令与语法检查的正文内容走 HTTP 等于明文发在公网上。TLS 是最低成本的必要保护。
+# 为什么用自签而不是 Let's Encrypt：后者不向 IP 地址签发证书，无域名只能自签。
+#   副作用是浏览器首次访问提示「不安全」，手动点「继续前往」即可——
+#   这是自签证书的正常现象，不是配置错误。
+#
+# 用户认证说明（2026-09-29 多用户体系）：
+#   认证由后端登录页完成（会话 Cookie，见 README「账号与认证」），
+#   本文件不再配置 Caddy basic_auth——双层认证会导致两次登录，已移除。
+#   手机浏览器首次访问时点「高级 → 继续前往」接受自签证书即可。
+
+# HTTP 一律跳转到 HTTPS
+:80 {
+	redir https://{host}{uri} permanent
+}
+
+:443 {
+	# 自签证书（Caddy 内置 CA）
+	tls internal
+
+	# 反代到仅监听回环的后端（见 grammarchecker.service 的 -addr 参数）
+	reverse_proxy 127.0.0.1:8899
+
+	# 不对外暴露服务端软件与版本 + 基础安全响应头（2026-09-29 加固）
+	# 注：未加 CSP——前端 Vue 运行时模板编译需要 unsafe-eval，强加等同虚设
+	header {
+		-Server
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+}

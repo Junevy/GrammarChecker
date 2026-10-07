@@ -1,0 +1,54 @@
+[Unit]
+Description=GrammarChecker 语法检查服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=grammar
+Group=grammar
+WorkingDirectory=/opt/grammarchecker
+
+# 环境变量：GC_API_KEY（LLM 密钥）、GC_AUTH_USER / GC_AUTH_PASS（访问认证）
+# 前缀 "-" 表示文件缺失时不报错；本文件权限应为 0600，仅 root 可读
+EnvironmentFile=-/etc/grammarchecker/env
+
+# -no-tray   ：服务器无桌面 dbus 会话，fyne.io/systray 托盘不可用，必须关闭
+# -no-browser：服务器无图形界面，避免调用 xdg-open 失败
+# -db        ：显式指定数据文件。默认落「可执行文件同目录」，
+#              升级覆盖 /opt/grammarchecker 时数据与程序混在一起，不利于备份与权限隔离
+# -addr      ：仅监听回环，由 Caddy/Nginx 对外；切勿改成 0.0.0.0
+ExecStart=/opt/grammarchecker/grammarchecker \
+  -addr 127.0.0.1:8899 \
+  -db /var/lib/grammarchecker/grammar.db \
+  -no-tray \
+  -no-browser
+
+Restart=on-failure
+RestartSec=3s
+
+# main.go 已注册 SIGTERM → srv.Shutdown（等待在途请求，最长 5s），与 systemd 停机流程天然契合
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=15s
+
+# ---- 安全加固：最小权限运行 ----
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+# ProtectSystem=strict 下全盘只读，仅放行数据目录写入
+ReadWritePaths=/var/lib/grammarchecker
+
+[Install]
+WantedBy=multi-user.target

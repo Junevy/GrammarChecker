@@ -1,0 +1,6 @@
+[Unit]
+Description=GrammarChecker 数据备份（单次执行）
+
+[Service]
+Type=oneshot
+ExecStart=/opt/grammarchecker/backup.sh
