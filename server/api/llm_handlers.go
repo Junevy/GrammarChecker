@@ -33,10 +33,10 @@ func chatMessages(system, user string) []llm.Message {
 	}
 }
 
-// callLLM 统一 LLM 调用链：读 KEY → Chat → 解析 JSON。
-// 返回 false 表示已写错误响应，调用方直接 return。
+// callLLM 统一 LLM 调用链：读 KEY（环境变量 GC_API_KEY 优先，回退数据库，见 apikey.go）
+// → Chat → 解析 JSON。返回 false 表示已写错误响应，调用方直接 return。
 func (h *Handler) callLLM(w http.ResponseWriter, r *http.Request, system, user string) (map[string]any, bool) {
-	apiKey, err := h.store.GetSetting("api_key")
+	apiKey, _, err := resolveAPIKey(h.store)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return nil, false
@@ -150,7 +150,7 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 		ErrorCount: errCount,
 		ResultJSON: mustMarshal(out),
 	}
-	if err := h.store.InsertCheckHistory(&rec); err != nil {
+	if err := h.repo(r).InsertCheckHistory(&rec); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -177,7 +177,7 @@ func (h *Handler) Discriminate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.ReuseHistory {
-		hit, err := h.store.FindDiscriminationByWord(word)
+		hit, err := h.repo(r).FindDiscriminationByWord(word)
 		switch {
 		case err == nil && strings.TrimSpace(hit.ResultJSON) != "":
 			var result map[string]any
@@ -217,7 +217,7 @@ func (h *Handler) Discriminate(w http.ResponseWriter, r *http.Request) {
 		SynonymsJSON: string(synJSON),
 		ResultJSON:   mustMarshal(out),
 	}
-	if err := h.store.InsertDiscrimination(&rec); err != nil {
+	if err := h.repo(r).InsertDiscrimination(&rec); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -252,7 +252,7 @@ func (h *Handler) Express(w http.ResponseWriter, r *http.Request) {
 		Recommended:  jsonStr(out, "core"),
 		VariantsJSON: mustMarshal(expressVariants(out)),
 	}
-	if err := h.store.InsertExpression(&rec); err != nil {
+	if err := h.repo(r).InsertExpression(&rec); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}

@@ -51,7 +51,7 @@ const app = createApp({
       checking: false,
       checkResultData: null,             // POST /api/check 响应
       currentSentence: '',               // 本次检查的原文（加入错词本用）
-      bubble: null,                      // {wrong, right, type} 悬停替换气泡数据
+      checkMarks: [],                    // 本次检查标红的全部错误 {start,end,wrong,right,type,fixed}
       cdRunning: false,
       cdRemain: 5,
       cdTimer: null,
@@ -113,9 +113,29 @@ const app = createApp({
       reuseOn: true,
       keyVisible: false,
       apiKey: '',                        // GET/PUT /api/settings
+      keyFromEnv: false,                 // true = 密钥由服务器环境变量 GC_API_KEY 托管（页面只读）
+
+      /* ---- 认证（多用户体系，api/README.md §9） ---- */
+      authRequired: false,               // true = 库中存在用户（多用户模式）
+      authed: true,                      // 多用户模式下是否已登录（单用户模式恒 true）
+      username: '',                      // 当前登录用户名
+      isAdmin: false,                    // 是否管理员（用户管理入口）
+      loginName: '', loginPass: '', loginErr: '', loginBusy: false,
+
+      /* ---- 用户管理（仅管理员） ---- */
+      userList: [],                      // {id, username, is_admin, created_at}
+      newUserName: '', newUserPass: '', newUserAdmin: false, userBusy: false,
+      delUserKey: '', delUserTimer: null,   // 删除用户二次确认（4s 自动还原）
+      resetTarget: null, resetPass: '', resetPwBusy: false,
+
+      /* ---- 修改密码 ---- */
+      oldPass: '', newPass1: '', pwBusy: false,
+
+      /* ---- 移动端抽屉导航（≤860px） ---- */
+      drawerOpen: false,
 
       /* ---- 弹窗 ---- */
-      activeModal: null // 'struct' | 'scene' | 'comp' | null
+      activeModal: null // 'struct' | 'scene' | 'comp' | 'resetpw' | null
     };
   },
 
@@ -204,6 +224,16 @@ const app = createApp({
     statDeltaText() {
       const v = this.statUp;
       return (v >= 0 ? '+' : '') + v;
+    },
+
+    /* 登录视图显示条件：多用户模式 && 未登录（单用户模式永不显示） */
+    showLogin() {
+      return this.authRequired && !this.authed;
+    },
+    /* 移动端顶栏标题：当前页面名 */
+    pageTitle() {
+      const n = this.navList.find(n => n.key === this.page);
+      return n ? n.label : 'GrammarChecker';
     }
   },
 
@@ -211,8 +241,16 @@ const app = createApp({
     /* 液态滑块跟随导航 / 选项卡移动 */
     page() {
       this.closeAllPops();
+      /* 移动端：点导航即收起抽屉 */
+      this.drawerOpen = false;
       /* 滑块需在 DOM 更新后重新测量；仓库页滑块随页面进场初始化 */
       this.$nextTick(() => { this.updateNavGlider(); this.updateTabGlider(); this.animateTrendStats(); });
+    },
+    /* 抽屉开合：锁滚动 + 重测滑块（侧边栏由 transform 移出屏幕，offsetTop 不变，
+       但重测一次兜底，避免字体加载等时序差异） */
+    drawerOpen(open) {
+      document.body.classList.toggle('drawer-locked', open);
+      this.$nextTick(() => this.updateNavGlider());
     },
     repoTab() {
       /* 切换子选项卡时退出编辑模式并清掉待确认删除 */
@@ -229,14 +267,136 @@ const app = createApp({
   methods: {
     /* ================= 启动加载（真实 API） ================= */
     async boot() {
-      /* 并行拉取首屏数据；单个失败不阻塞其余模块 */
+      /* 先查身份（api/README.md §9.1）：多用户模式未登录 → 停在登录视图，不拉业务数据 */
+      try {
+        const me = await API.me();
+        this.authRequired = !!me.auth_required;
+        this.authed = !!me.username;
+        this.username = me.username || '';
+        this.isAdmin = !!me.is_admin;
+      } catch (e) {
+        this.showToast(e);
+        return;
+      }
+      if (this.showLogin) return;
+      await this.loadAll();
+    },
+    /* 并行拉取首屏数据；单个失败不阻塞其余模块 */
+    async loadAll() {
       const tasks = [
         this.loadWrongWords(), this.loadSentences(), this.loadDiscriminations(),
         this.loadCheckHistory(), this.loadExpHistory(), this.loadSettings(), this.loadTrends()
       ];
+      if (this.authRequired && this.isAdmin) tasks.push(this.loadUsers());
       await Promise.allSettled(tasks);
       this.loaded = true;
     },
+
+    /* ================= 认证（api/README.md §9） ================= */
+    async doLogin() {
+      if (this.loginBusy) return;
+      this.loginErr = '';
+      if (!this.loginName || !this.loginPass) {
+        this.loginErr = '请输入用户名和密码';
+        return;
+      }
+      this.loginBusy = true;
+      try {
+        const me = await API.login(this.loginName, this.loginPass);
+        this.authRequired = !!me.auth_required;
+        this.authed = !!me.username;
+        this.username = me.username || '';
+        this.isAdmin = !!me.is_admin;
+        this.loginPass = '';
+        if (!this.showLogin) await this.loadAll();
+      } catch (e) {
+        this.loginErr = (e && e.message) || '登录失败，请重试';
+      } finally {
+        this.loginBusy = false;
+      }
+    },
+    async doLogout() {
+      try { await API.logout(); } catch (e) { /* 网络失败也按已退出处理（Cookie 仍在也无妨） */ }
+      this.authed = false;
+      this.username = '';
+      this.isAdmin = false;
+      this.drawerOpen = false;
+      this.closeAllPops();
+      this.activeModal = null;
+    },
+    /* 会话过期广播（api.js 统一 401 处理触发）：切回登录视图 */
+    onUnauthorized() {
+      if (!this.authRequired || !this.authed) return;
+      this.authed = false;
+      this.loginErr = '';
+      this.showToast('登录已过期，请重新登录', 'info');
+    },
+
+    /* ================= 用户管理（仅管理员） ================= */
+    async loadUsers() {
+      try { this.userList = await API.users(); }
+      catch (e) { this.showToast(e); }
+    },
+    async addUser() {
+      if (this.userBusy) return;
+      if (!this.newUserName) { this.showToast('请输入新用户名', 'info'); return; }
+      if ((this.newUserPass || '').length < 6) { this.showToast('初始密码至少 6 位', 'info'); return; }
+      this.userBusy = true;
+      try {
+        await API.createUser(this.newUserName, this.newUserPass, this.newUserAdmin);
+        this.showToast('用户 ' + this.newUserName + ' 创建成功', 'info');
+        this.newUserName = ''; this.newUserPass = ''; this.newUserAdmin = false;
+        await this.loadUsers();
+      } catch (e) { this.showToast(e); }
+      finally { this.userBusy = false; }
+    },
+    /* 删除用户：二次点击确认，4s 未确认自动还原（与仓库删除角标同模式） */
+    async removeUser(u) {
+      const key = 'u' + u.id;
+      if (this.delUserKey !== key) {
+        this.delUserKey = key;
+        clearTimeout(this.delUserTimer);
+        this.delUserTimer = setTimeout(() => { this.delUserKey = ''; }, 4000);
+        return;
+      }
+      clearTimeout(this.delUserTimer);
+      this.delUserKey = '';
+      try {
+        await API.deleteUser(u.id);
+        this.showToast('用户 ' + u.username + ' 已删除', 'info');
+        await this.loadUsers();
+      } catch (e) { this.showToast(e); }
+    },
+    openResetPw(u) {
+      this.resetTarget = u;
+      this.resetPass = '';
+      this.activeModal = 'resetpw';
+    },
+    async submitResetPw() {
+      if (this.resetPwBusy) return;
+      if ((this.resetPass || '').length < 6) { this.showToast('新密码至少 6 位', 'info'); return; }
+      this.resetPwBusy = true;
+      try {
+        await API.resetUserPassword(this.resetTarget.id, this.resetPass);
+        this.showToast('已重置 ' + this.resetTarget.username + ' 的密码', 'info');
+        this.activeModal = null;
+      } catch (e) { this.showToast(e); }
+      finally { this.resetPwBusy = false; }
+    },
+    async submitPassword() {
+      if (this.pwBusy) return;
+      if ((this.newPass1 || '').length < 6) { this.showToast('新密码至少 6 位', 'info'); return; }
+      this.pwBusy = true;
+      try {
+        await API.changePassword(this.oldPass, this.newPass1);
+        this.oldPass = ''; this.newPass1 = '';
+        /* 服务端已吊销本人全部会话（含当前），主动回登录视图重新登录 */
+        this.showToast('密码已修改，请重新登录', 'info');
+        await this.doLogout();
+      } catch (e) { this.showToast(e); }
+      finally { this.pwBusy = false; }
+    },
+
     async loadWrongWords() {
       try {
         const list = await API.wrongWords();
@@ -297,7 +457,10 @@ const app = createApp({
     async loadSettings() {
       try {
         const s = await API.settings();
-        this.apiKey = s.api_key || '';
+        /* 环境变量托管（api_key_source === 'env'）：后端刻意不回传明文，api_key 恒为空串。
+           此时输入框置灰只读，避免用户误以为「密钥丢了」而重新填写空值覆盖数据库。 */
+        this.keyFromEnv = s.api_key_source === 'env';
+        this.apiKey = this.keyFromEnv ? '' : (s.api_key || '');
         this.reuseOn = (s.reuse_discrimination_history || '1') === '1';
       } catch (e) { this.showToast(e); }
     },
@@ -382,13 +545,11 @@ const app = createApp({
       this.updateNavGlider();
       this.updateTabGlider();
       this.animateTrendStats();
-      /* 回到检查页时恢复编辑器草稿（contenteditable 在 out-in 转场中被销毁重建） */
+      /* 回到检查页时恢复编辑器（contenteditable 在 out-in 转场中被销毁重建）：
+         草稿文本 + 未替换标红/气泡 + 对号（无错或全替换完时），见 restoreEditorView */
       if (this.page === 'check' && this.editorDraft) {
         const el = this.$refs.editorEl;
-        if (el && !el.textContent.trim()) {
-          el.textContent = this.editorDraft;
-          this.charCount = Math.min(this.editorDraft.length, 500);
-        }
+        if (el && !el.textContent.trim()) this.restoreEditorView();
       }
       /* 字体就绪会改变文本宽度，重测一次保证滑块贴合 */
       if (document.fonts && document.fonts.ready) {
@@ -421,97 +582,185 @@ const app = createApp({
     },
 
     /* ================= 检查页 ================= */
+    /* 编辑器纯文本：排除替换气泡、对号等辅助元素的内容（多处错误 = 多个气泡） */
+    editorText() {
+      const el = this.$refs.editorEl;
+      if (!el) return '';
+      const clone = el.cloneNode(true);
+      clone.querySelectorAll('.fix-bubble, .ok-mark').forEach((n) => n.remove());
+      return clone.textContent;
+    },
     onEditorInput() {
-      /* 统计正文字符数时排除替换气泡、对号等辅助元素 */
-      const clone = this.$refs.editorEl.cloneNode(true);
-      const bubble = clone.querySelector('.fix-bubble');
-      if (bubble) bubble.remove();
-      const mark = clone.querySelector('.ok-mark');
-      if (mark) mark.remove();
-      const text = clone.textContent;
+      const text = this.editorText();
       this.editorDraft = text;
       this.charCount = Math.min(text.length, 500);
     },
     focusEditor() { this.$refs.editorEl.focus(); },
-    /* 悬停气泡：一键替换错误单词（数据来自检查结果） */
-    replaceWrong() {
-      if (!this.bubble) return;
+    /* 一键替换：把该标红片段换成修正文本；全部替换完才取消收录倒计时并显示句尾绿色对号 */
+    replaceErrSpan(span, m) {
+      /* 恢复场景下 m 是按草稿重新定位的副本，经 src 回链同步业务标记（收录/收藏口径） */
+      (m.src || m).fixed = true;
+      m.fixed = true;
+      span.replaceWith(document.createTextNode(m.right));
       const el = this.$refs.editorEl;
-      if (!el) return;
-      const span = el.querySelector('.hl-err');
-      if (span) span.replaceWith(document.createTextNode(this.bubble.right));
-      this.bubble = null;
-      /* 错词已改正：取消收录倒计时，并显示句尾绿色对号 */
-      clearInterval(this.cdTimer);
-      this.cdRunning = false;
-      this.addOkMark();
+      if (el && !el.querySelector('.hl-err')) {
+        clearInterval(this.cdTimer);
+        this.cdRunning = false;
+        this.addOkMark();
+      }
       this.onEditorInput();
     },
-    /* 把首个错误渲染为标红 + 悬停替换气泡（fix 格式："wrong → right"） */
-    renderEditorError(err) {
-      const el = this.$refs.editorEl;
-      if (!el || !err || !err.fix) return;
-      const parts = err.fix.split('→');
-      if (parts.length < 2) return;
-      const wrong = parts[0].trim(), right = parts[1].trim();
-      const text = el.textContent;
-      const idx = text.indexOf(wrong);
-      if (idx < 0) return;
-      el.textContent = text;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      let node, acc = 0;
-      while ((node = walker.nextNode())) {
-        const start = acc, end = acc + node.textContent.length;
-        if (idx < end && idx >= start) {
-          const range = document.createRange();
-          range.setStart(node, idx - start);
-          range.setEnd(node, Math.min(idx - start + wrong.length, node.textContent.length));
-          const span = document.createElement('span');
-          span.className = 'hl-err';
-          span.appendChild(range.extractContents());
-          const bubble = document.createElement('span');
-          bubble.className = 'fix-bubble';
-          bubble.contentEditable = 'false';
-          bubble.innerHTML = '<span class="chip red">' + (err.type || '错误') + '</span>'
-            + '<span class="fb-text">替换为 <b></b></span>';
-          bubble.querySelector('b').textContent = right;
-          const btn = document.createElement('button');
-          btn.className = 'fb-btn';
-          btn.textContent = '替换';
-          /* 绑定替换点击：阻止冒泡避免误触全局弹层关闭 */
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.replaceWrong();
-          });
-          bubble.appendChild(btn);
-          span.appendChild(bubble);
-          range.insertNode(span);
-          /* 悬停管理：离开标红词后给 600ms 宽限期，鼠标路径稍偏不丢气泡 */
-          let hideTimer = null;
-          span.addEventListener('mouseenter', () => {
-            clearTimeout(hideTimer);
-            span.classList.add('bubble-open');
-          });
-          span.addEventListener('mouseleave', () => {
-            hideTimer = setTimeout(() => span.classList.remove('bubble-open'), 600);
-          });
-          this.bubble = { wrong, right, type: err.type };
-          this.onEditorInput();
-          return;
+    /* 由检查结果（或恢复用的伪 fix 串）计算标红区间。LLM 不回传错误位置，
+       只能按 fix 左片段在原文中定位：已占用区间去重（同词多错不重复包同段），
+       再按起点排序并丢弃重叠段（保先出现者）。err.src 可选：恢复场景回链业务标记。 */
+    computeMarks(text, errors) {
+      const marks = [];
+      for (const err of errors || []) {
+        if (!err || !err.fix) continue;
+        const parts = err.fix.split('→');
+        if (parts.length < 2 || !parts[0].trim()) continue;
+        const wrong = parts[0].trim(), right = parts[1].trim();
+        let idx = -1;
+        for (let from = 0; (idx = text.indexOf(wrong, from)) >= 0; from = idx + 1) {
+          const end = idx + wrong.length;
+          if (!marks.some(m => idx < m.end && end > m.start)) break;
         }
-        acc = end;
+        if (idx < 0) continue;
+        marks.push({ start: idx, end: idx + wrong.length, wrong, right, type: err.type || '错误', fixed: false, src: err.src || null });
       }
+      marks.sort((a, b) => a.start - b.start || b.end - a.end);
+      const kept = [];
+      let lastEnd = -1;
+      for (const m of marks) {
+        if (m.start < lastEnd) continue;
+        kept.push(m);
+        lastEnd = m.end;
+      }
+      return kept;
     },
-    /* 检查页「收藏例句」：把本次检查句子（有错时按 fix 修正）存入仓库·例句（§2.4） */
+    /* 把标红区间重建进编辑器 DOM（span + 各自气泡）；只动 DOM，不改业务状态。
+       全程 DOM API + textContent 写入（type/right 来自 LLM 返回，属不可信输入，
+       禁止 innerHTML 插值，防 prompt 注入型 XSS），勿改回拼接 */
+    wrapMarks(text, marks) {
+      const el = this.$refs.editorEl;
+      if (!el || !marks || !marks.length) return;
+      el.textContent = '';
+      let pos = 0;
+      for (const m of marks) {
+        if (m.start > pos) el.appendChild(document.createTextNode(text.slice(pos, m.start)));
+        el.appendChild(this.buildErrSpan(m));
+        pos = m.end;
+      }
+      if (pos < text.length) el.appendChild(document.createTextNode(text.slice(pos)));
+      this.onEditorInput();
+    },
+    /* 把检查结果的全部错误渲染为标红 + 各自的替换气泡（fix 格式："wrong → right"） */
+    renderEditorErrors(text, errors) {
+      if (!this.$refs.editorEl || !errors || !errors.length) return;
+      const kept = this.computeMarks(text, errors);
+      if (!kept.length) return;
+      this.checkMarks = kept;
+      this.wrapMarks(text, kept);
+    },
+    /* 恢复检查页编辑器视图。切页会经 out-in 转场销毁重建 contenteditable，
+       标红/气泡/对号是 DOM 装饰不在 Vue 状态里，须按状态重画：
+       未替换的标红按草稿重新定位（副本经 src 回链业务 checkMarks，业务基准保持 currentSentence 不动）；
+       全部替换完或本就无错时恢复句尾绿色对号。 */
+    restoreEditorView() {
+      const el = this.$refs.editorEl;
+      if (!el) return;
+      const text = this.editorDraft;
+      el.textContent = text;
+      this.charCount = Math.min(text.length, 500);
+      if (!this.showResult) return;
+      if (this.noErrors) { this.addOkMark(); return; }
+      const unfixed = (this.checkMarks || []).filter(m => !m.fixed);
+      if (!unfixed.length) { this.addOkMark(); return; }
+      const wrapped = this.computeMarks(text, unfixed.map(m => ({
+        type: m.type, fix: m.wrong + ' → ' + m.right, src: m
+      })));
+      if (wrapped.length) this.wrapMarks(text, wrapped);
+    },
+    /* 构造单个标红词 span（错误类型 chip + 一键替换气泡；桌面 hover / 触屏 tap 双模） */
+    buildErrSpan(m) {
+      const span = document.createElement('span');
+      span.className = 'hl-err';
+      span.appendChild(document.createTextNode(m.wrong));
+      const bubble = document.createElement('span');
+      bubble.className = 'fix-bubble';
+      bubble.contentEditable = 'false';
+      /* 静态结构走 innerHTML（不含任何动态数据）；动态文案必须经 textContent 写入 */
+      bubble.innerHTML = '<span class="fb-text">替换为 <b></b></span>';
+      const chip = document.createElement('span');
+      chip.className = 'chip red';
+      chip.textContent = m.type;
+      bubble.insertBefore(chip, bubble.firstChild);
+      bubble.querySelector('b').textContent = m.right;
+      const btn = document.createElement('button');
+      btn.className = 'fb-btn';
+      btn.textContent = '替换';
+      /* 绑定替换点击：阻止冒泡避免误触全局弹层关闭 */
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.replaceErrSpan(span, m);
+      });
+      bubble.appendChild(btn);
+      span.appendChild(bubble);
+      /* 打开气泡时把左右缘夹回视口内（max-width 只约束宽度，左锚定的盒子
+         在行尾标红词上仍会越出右缘）。先清零再测：tap 会连触 mouseenter+click，
+         若基于已夹持位置重测会把上一次的修正当「无需位移」清掉 */
+      const clampBubble = () => {
+        bubble.style.marginLeft = '';
+        const vw = document.documentElement.clientWidth;
+        const r = bubble.getBoundingClientRect();
+        let dx = 0;
+        if (r.right > vw - 8) dx = (vw - 8) - r.right;
+        else if (r.left < 8) dx = 8 - r.left;
+        if (dx) bubble.style.marginLeft = dx + 'px';
+      };
+      /* 悬停管理：离开标红词后给 600ms 宽限期，鼠标路径稍偏不丢气泡 */
+      let hideTimer = null;
+      span.addEventListener('mouseenter', () => {
+        clearTimeout(hideTimer);
+        span.classList.add('bubble-open');
+        clampBubble();
+      });
+      span.addEventListener('mouseleave', () => {
+        hideTimer = setTimeout(() => span.classList.remove('bubble-open'), 600);
+      });
+      /* 触屏设备（无 hover 能力）：点标红词唤出气泡，点空白处收起；
+         桌面仍走 hover，CSS 的 :hover 规则也包在 @media (hover: hover) 内防粘滞 */
+      if (!window.matchMedia || !window.matchMedia('(hover: hover)').matches) {
+        span.addEventListener('click', (e) => {
+          e.stopPropagation();
+          document.querySelectorAll('.hl-err.bubble-open').forEach((other) => {
+            if (other !== span) other.classList.remove('bubble-open');
+          });
+          span.classList.add('bubble-open');
+          clampBubble();
+        });
+      }
+      return span;
+    },
+    /* 检查页「收藏例句」：把本次检查句子（按全部标红错误修正后）存入仓库·例句（§2.4） */
     buildCorrectedSentence() {
       let s = this.currentSentence || '';
-      const data = this.checkResultData;
-      if (data && data.errors && data.errors.length) {
-        for (const err of data.errors) {
-          const parts = (err.fix || '').split('→');
-          if (parts.length === 2 && parts[0].trim()) {
-            const right = parts[1].trim();
-            s = right ? s.replace(parts[0].trim(), right) : s;
+      const marks = this.checkMarks || [];
+      if (marks.length) {
+        /* 从句尾向句首逐段替换，避免前面的替换使后面的位置失效 */
+        for (const m of marks.slice().sort((a, b) => b.start - a.start)) {
+          s = s.slice(0, m.start) + m.right + s.slice(m.end);
+        }
+      } else {
+        /* 兜底：未生成标红位置时按 fix 串首处替换 */
+        const data = this.checkResultData;
+        if (data && data.errors && data.errors.length) {
+          for (const err of data.errors) {
+            const parts = (err.fix || '').split('→');
+            if (parts.length === 2 && parts[0].trim()) {
+              const right = parts[1].trim();
+              s = right ? s.replace(parts[0].trim(), right) : s;
+            }
           }
         }
       }
@@ -543,7 +792,8 @@ const app = createApp({
     },
     async doCheck() {
       this.closeAllPops();
-      const text = this.$refs.editorEl ? this.$refs.editorEl.textContent.trim() : '';
+      /* editorText 排除旧气泡/对号文本，避免二次检查时把气泡文案当正文送检 */
+      const text = this.editorText().trim();
       if (!text) { this.showToast('请先输入要检查的句子', 'info'); return; }
       if (this.checking) return;
       this.checking = true;
@@ -555,13 +805,19 @@ const app = createApp({
         this.checkResultData = resp;
         this.noErrors = !resp.errTotal || resp.errTotal === 0 || !resp.errors || resp.errors.length === 0;
         this.showResult = true;
-        this.bubble = null;
+        this.checkMarks = [];
         this.favSent = false;
         this.favSentId = null;
+        /* 先把编辑器重置为本次送检纯文本（清掉上一轮的标红/气泡/对号），再按新结果渲染。
+           editorDraft 无条件更新：检查期间用户切走（editorEl 不存在）时，返回仍按本次结果恢复 */
+        this.editorDraft = text;
+        this.charCount = Math.min(text.length, 500);
+        const el = this.$refs.editorEl;
+        if (el) el.textContent = text;
         if (this.noErrors) {
           this.addOkMark();
         } else {
-          this.renderEditorError(resp.errors[0]);
+          this.renderEditorErrors(text, resp.errors);
           this.startCountdown();
         }
         this.loadCheckHistory();
@@ -589,7 +845,7 @@ const app = createApp({
       this.charCount = Math.min(text.length, 500);
       this.showResult = false;
       this.noErrors = false;
-      this.bubble = null;
+      this.checkMarks = [];
       this.favSent = false;
       this.favSentId = null;
       this.openPop = null;
@@ -614,26 +870,25 @@ const app = createApp({
       clearInterval(this.cdTimer);
       this.cdRunning = false;
     },
-    /* 倒计时结束：POST /api/wrong-words 加入错词本（§1.4） */
+    /* 倒计时结束：POST /api/wrong-words 逐条加入错词本（§1.4；已一键替换的错误不收录） */
     async finishAdd() {
       clearInterval(this.cdTimer);
       this.cdRunning = false;
       if (!this.checkResultData || this.noErrors) return;
-      const err = (this.checkResultData.errors && this.checkResultData.errors[0]) || null;
-      let word = err && err.fix ? err.fix.split('→')[0].trim() : '';
-      let corrected = this.currentSentence;
-      if (word) {
-        const right = err.fix.split('→')[1] ? err.fix.split('→')[1].trim() : '';
-        corrected = right ? this.currentSentence.replace(word, right) : this.currentSentence;
-      }
+      const struct = this.checkResultData.struct ? JSON.stringify(this.checkResultData.struct) : '';
+      const marks = (this.checkMarks || []).filter(m => !m.fixed);
       try {
-        await API.addWrongWord({
-          word: word || this.currentSentence.slice(0, 50),
-          error_type: err ? err.type : '',
-          original_sentence: this.currentSentence,
-          corrected_sentence: corrected,
-          analysis_json: this.checkResultData.struct ? JSON.stringify(this.checkResultData.struct) : ''
-        });
+        for (const m of marks) {
+          /* corrected_sentence 只修正该处错误，保证仓库卡片 pre/bad/good/post 单差异点展示 */
+          const corrected = this.currentSentence.slice(0, m.start) + m.right + this.currentSentence.slice(m.end);
+          await API.addWrongWord({
+            word: m.wrong,
+            error_type: m.type,
+            original_sentence: this.currentSentence,
+            corrected_sentence: corrected,
+            analysis_json: struct
+          });
+        }
         this.loadWrongWords();
       } catch (e) { this.showToast(e); }
     },
@@ -963,9 +1218,13 @@ const app = createApp({
       if (!e.target.closest('.history-pop') && !e.target.closest('.btn-history') && !e.target.closest('.dropdown')) {
         this.closeAllPops();
       }
+      /* 触屏模式：点空白处收起打开的替换气泡（点标红词/替换按钮已 stopPropagation） */
+      document.querySelectorAll('.hl-err.bubble-open').forEach((el) => el.classList.remove('bubble-open'));
     });
+    /* 会话过期（任意接口返回 401 unauthorized）：切回登录视图 */
+    window.addEventListener('gc:unauthorized', () => this.onUnauthorized());
     this.onEditorInput();
-    /* 首屏：并行拉取真实数据 */
+    /* 首屏：查身份后再并行拉取真实数据 */
     this.boot();
   }
 });
@@ -989,4 +1248,5 @@ app.directive('ripple', {
   }
 });
 
-app.mount('#app');
+/* 挂载并暴露根实例句柄：控制台调试 / 无头验证脚本用（如 renderEditorErrors 注入多错误标红场景） */
+window.GC_VM = app.mount('#app');

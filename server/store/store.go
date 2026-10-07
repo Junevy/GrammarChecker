@@ -69,6 +69,7 @@ func (s *Store) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS wrong_words (
 			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id            INTEGER NOT NULL DEFAULT 0,
 			word               TEXT NOT NULL,
 			error_type         TEXT NOT NULL,
 			original_sentence  TEXT NOT NULL DEFAULT '',
@@ -81,6 +82,7 @@ func (s *Store) migrate() error {
 
 		`CREATE TABLE IF NOT EXISTS sentences (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id       INTEGER NOT NULL DEFAULT 0,
 			english       TEXT NOT NULL,
 			chinese       TEXT NOT NULL DEFAULT '',
 			source        TEXT NOT NULL DEFAULT 'manual',
@@ -91,6 +93,7 @@ func (s *Store) migrate() error {
 
 		`CREATE TABLE IF NOT EXISTS discriminations (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id       INTEGER NOT NULL DEFAULT 0,
 			word          TEXT NOT NULL,
 			synonyms_json TEXT NOT NULL DEFAULT '',
 			result_json   TEXT NOT NULL DEFAULT '',
@@ -102,6 +105,7 @@ func (s *Store) migrate() error {
 
 		`CREATE TABLE IF NOT EXISTS expressions (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id       INTEGER NOT NULL DEFAULT 0,
 			chinese       TEXT NOT NULL,
 			recommended   TEXT NOT NULL DEFAULT '',
 			variants_json TEXT NOT NULL DEFAULT '',
@@ -112,6 +116,7 @@ func (s *Store) migrate() error {
 
 		`CREATE TABLE IF NOT EXISTS check_history (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id     INTEGER NOT NULL DEFAULT 0,
 			sentence    TEXT NOT NULL,
 			error_count INTEGER NOT NULL DEFAULT 0,
 			result_json TEXT NOT NULL DEFAULT '',
@@ -133,6 +138,26 @@ func (s *Store) migrate() error {
 			demo TEXT NOT NULL DEFAULT ''
 		)`,
 
+		// 用户与会话（多用户体系，2026-09-29）：
+		// users 表为空 = 单用户模式（不启用登录，数据归属内置 user_id=0）；
+		// username 大小写不敏感唯一（COLLATE NOCASE），登录比较用 bcrypt 哈希。
+		`CREATE TABLE IF NOT EXISTS users (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			password_hash TEXT NOT NULL,
+			is_admin      INTEGER NOT NULL DEFAULT 0,
+			created_at    TEXT NOT NULL
+		)`,
+		// 会话存 token 的 SHA-256 哈希（不存原始 token，库泄露也无法伪造会话）
+		`CREATE TABLE IF NOT EXISTS sessions (
+			token_hash TEXT PRIMARY KEY,
+			user_id    INTEGER NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at)`,
+
 		// 预置设置项（技术文档第 3 节）：api_key 本地密钥；辨析复用历史开关默认开
 		`INSERT OR IGNORE INTO settings (key, value) VALUES ('api_key', '')`,
 		`INSERT OR IGNORE INTO settings (key, value) VALUES ('reuse_discrimination_history', '1')`,
@@ -148,6 +173,26 @@ func (s *Store) migrate() error {
 	}
 	if err := s.ensureColumn("expressions", "favorite INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
+	}
+	// 老库升级：user_id 列（多用户数据隔离，2026-09-29 新增）；新库由上方 DDL 直接建列。
+	// 默认值 0 = 单用户内置身份，与多用户模式下未登录（auth 关闭）时写入的身份一致。
+	for _, t := range []string{"wrong_words", "sentences", "discriminations", "expressions", "check_history"} {
+		if err := s.ensureColumn(t, "user_id INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	// 用户过滤索引：须在 ensureColumn 之后建（老库刚补上 user_id 列）
+	userIdx := []string{
+		`CREATE INDEX IF NOT EXISTS idx_wrong_words_user ON wrong_words (user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_sentences_user ON sentences (user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_discriminations_user ON discriminations (user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_expressions_user ON expressions (user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_check_history_user ON check_history (user_id, created_at)`,
+	}
+	for _, stmt := range userIdx {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("建用户索引失败: %w（语句: %s）", err, stmt)
+		}
 	}
 	// 预置成分说明 seed（OR REPLACE：文案升级后重启即生效）
 	return s.seedCompInfos()
@@ -220,6 +265,40 @@ func (s *Store) setFavorite(table string, id int64, fav bool) error {
 // deleteAll 清空表，返回删除条数。table 仅来自本包内固定的表名字面量。
 func (s *Store) deleteAll(table string) (int64, error) {
 	res, err := s.db.Exec("DELETE FROM " + table)
+	if err != nil {
+		return 0, fmt.Errorf("清空表失败: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// deleteByIDFor 按 ID 删除记录并校验归属：仅删除 user_id = uid 的行，
+// 跨用户或不存在一律返回 ErrNotFound（对调用方不可区分，避免 id 探测）。
+func (s *Store) deleteByIDFor(table string, id, uid int64) error {
+	res, err := s.db.Exec("DELETE FROM "+table+" WHERE id = ? AND user_id = ?", id, uid)
+	if err != nil {
+		return fmt.Errorf("删除记录失败: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// setFavoriteFor 置位/清除收藏标记并校验归属（语义同 deleteByIDFor）。
+func (s *Store) setFavoriteFor(table string, id, uid int64, fav bool) error {
+	res, err := s.db.Exec("UPDATE "+table+" SET favorite = ? WHERE id = ? AND user_id = ?", fav, id, uid)
+	if err != nil {
+		return fmt.Errorf("更新收藏状态失败: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// deleteAllFor 清空指定用户的该表数据，返回删除条数。
+func (s *Store) deleteAllFor(table string, uid int64) (int64, error) {
+	res, err := s.db.Exec("DELETE FROM "+table+" WHERE user_id = ?", uid)
 	if err != nil {
 		return 0, fmt.Errorf("清空表失败: %w", err)
 	}

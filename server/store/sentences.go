@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Sentence 例句收藏（sentences 表，对应文档 6.3）。
 // 命名澄清：「生词本」为早期废弃叫法，正式名称为「例句」。
@@ -15,13 +18,23 @@ type Sentence struct {
 
 // ListSentences 查询例句列表；q 按英文句子模糊搜索，按创建时间倒序。
 func (s *Store) ListSentences(q string) ([]Sentence, error) {
-	sqlStr := `SELECT id, english, chinese, source, analysis_json, created_at FROM sentences`
+	return s.listSentences(q, uidAll)
+}
+
+// listSentences 内部实现：uid = uidAll 时不按用户过滤，否则只返回该用户的记录。
+func (s *Store) listSentences(q string, uid int64) ([]Sentence, error) {
+	where := []string{"1 = 1"}
 	args := []any{}
+	if uid != uidAll {
+		where = append(where, "user_id = ?")
+		args = append(args, uid)
+	}
 	if q != "" {
-		sqlStr += " WHERE english LIKE ?"
+		where = append(where, "english LIKE ?")
 		args = append(args, "%"+q+"%")
 	}
-	sqlStr += " ORDER BY created_at DESC, id DESC"
+	sqlStr := `SELECT id, english, chinese, source, analysis_json, created_at FROM sentences
+		WHERE ` + strings.Join(where, " AND ") + " ORDER BY created_at DESC, id DESC"
 
 	rows, err := s.db.Query(sqlStr, args...)
 	if err != nil {
@@ -43,6 +56,14 @@ func (s *Store) ListSentences(q string) ([]Sentence, error) {
 // InsertSentence 新增例句（手动添加时 source 留空则记为 manual）。
 // 写入后回填 x.ID 与 x.CreatedAt。
 func (s *Store) InsertSentence(x *Sentence) error {
+	return s.insertSentence(x, uidAll)
+}
+
+// insertSentence 内部实现：uid = uidAll 时不写归属（保持 0），否则写入该用户。
+func (s *Store) insertSentence(x *Sentence, uid int64) error {
+	if uid == uidAll {
+		uid = 0
+	}
 	if x.Source == "" {
 		x.Source = "manual"
 	}
@@ -50,9 +71,9 @@ func (s *Store) InsertSentence(x *Sentence) error {
 		x.CreatedAt = nowISO()
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO sentences (english, chinese, source, analysis_json, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		x.English, x.Chinese, x.Source, x.AnalysisJSON, x.CreatedAt)
+		`INSERT INTO sentences (user_id, english, chinese, source, analysis_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		uid, x.English, x.Chinese, x.Source, x.AnalysisJSON, x.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("写入例句失败: %w", err)
 	}

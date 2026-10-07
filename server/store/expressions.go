@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Expression 表达记录（expressions 表，对应文档 6.7）。
 type Expression struct {
@@ -15,17 +18,27 @@ type Expression struct {
 // ListExpressions 表达历史列表，按创建时间倒序；limit > 0 时限制条数。
 // favorite 非 nil 时按收藏状态过滤（nil = 不过滤）。
 func (s *Store) ListExpressions(limit int, favorite *bool) ([]Expression, error) {
-	// SQL 子句顺序固定为 WHERE → ORDER BY → LIMIT，故先拼 WHERE/ORDER BY 再按需拼 LIMIT
-	sqlStr := `SELECT id, chinese, recommended, variants_json, favorite, created_at FROM expressions`
+	return s.listExpressions(limit, favorite, uidAll)
+}
+
+// listExpressions 内部实现：uid = uidAll 时不按用户过滤，否则只返回该用户的记录。
+func (s *Store) listExpressions(limit int, favorite *bool, uid int64) ([]Expression, error) {
+	where := []string{"1 = 1"}
 	args := []any{}
+	if uid != uidAll {
+		where = append(where, "user_id = ?")
+		args = append(args, uid)
+	}
 	if favorite != nil {
 		if *favorite {
-			sqlStr += " WHERE favorite = 1"
+			where = append(where, "favorite = 1")
 		} else {
-			sqlStr += " WHERE favorite = 0"
+			where = append(where, "favorite = 0")
 		}
 	}
-	sqlStr += " ORDER BY created_at DESC, id DESC"
+	// SQL 子句顺序固定为 WHERE → ORDER BY → LIMIT
+	sqlStr := `SELECT id, chinese, recommended, variants_json, favorite, created_at FROM expressions
+		WHERE ` + strings.Join(where, " AND ") + " ORDER BY created_at DESC, id DESC"
 	if limit > 0 {
 		sqlStr += " LIMIT ?"
 		args = append(args, limit)
@@ -50,13 +63,21 @@ func (s *Store) ListExpressions(limit int, favorite *bool) ([]Expression, error)
 
 // InsertExpression 写入表达记录（/api/express 接通 LLM 后调用）。
 func (s *Store) InsertExpression(x *Expression) error {
+	return s.insertExpression(x, uidAll)
+}
+
+// insertExpression 内部实现：uid = uidAll 时不写归属（保持 0），否则写入该用户。
+func (s *Store) insertExpression(x *Expression, uid int64) error {
+	if uid == uidAll {
+		uid = 0
+	}
 	if x.CreatedAt == "" {
 		x.CreatedAt = nowISO()
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO expressions (chinese, recommended, variants_json, created_at)
-		 VALUES (?, ?, ?, ?)`,
-		x.Chinese, x.Recommended, x.VariantsJSON, x.CreatedAt)
+		`INSERT INTO expressions (user_id, chinese, recommended, variants_json, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		uid, x.Chinese, x.Recommended, x.VariantsJSON, x.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("写入表达记录失败: %w", err)
 	}

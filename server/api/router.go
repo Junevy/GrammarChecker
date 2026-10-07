@@ -8,6 +8,7 @@ package api
 import (
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,15 +28,34 @@ func NewHandler(s store.Repository, c *llm.Client) *Handler {
 	return &Handler{store: s, llm: c}
 }
 
+// repo 当前请求可用的数据视图：绑定到登录用户（多用户模式）或
+// 内置单用户身份 uid=0（单用户模式），见 store.ForUser / auth.go。
+// 全部业务数据 handler 必须经此取数，禁止直接用 h.store（会绕过用户隔离）；
+// settings / comp-info / 用户管理属全局语义，仍用 h.store。
+func (h *Handler) repo(r *http.Request) store.Repository {
+	return h.store.ForUser(currentUser(r))
+}
+
 // Routes 组装完整路由：/api 前缀的业务接口 + 嵌入的前端静态资源。
 func (h *Handler) Routes(assets fs.FS) http.Handler {
 	r := chi.NewRouter()
-	r.Use(recoverJSON)                      // panic 兜底，返回 500 JSON（替代 chimw.Recoverer 纯文本）
+	r.Use(recoverJSON)                       // panic 兜底，返回 500 JSON（替代 chimw.Recoverer 纯文本）
+	r.Use(h.withAuth)                        // 会话认证：单用户模式关闭；多用户模式校验 gc_session（auth.go）
 	r.Use(withJSONTimeout(60 * time.Second)) // 文档约定：LLM 同步长请求 60s 上限，超时返回 503 JSON
 
 	r.Route("/api", func(r chi.Router) {
-		// 健康检查（供托盘/脚本探活，非文档 13 接口）
+		// 健康检查（供托盘/脚本探活，非文档 13 接口；认证豁免）
 		r.Get("/ping", h.Ping)
+
+		// 认证与用户管理（多用户体系，处理器见 auth_handlers.go / users_handlers.go）
+		r.Post("/auth/login", h.Login)
+		r.Post("/auth/logout", h.Logout)
+		r.Get("/auth/me", h.Me)
+		r.Post("/auth/password", h.ChangePassword)
+		r.Get("/users", h.ListUsers)
+		r.Post("/users", h.CreateUser)
+		r.Delete("/users/{id}", h.DeleteUser)
+		r.Post("/users/{id}/password", h.ResetUserPassword)
 
 		// LLM 类（DeepSeek 已接通，处理器见 llm_handlers.go）
 		r.Post("/check", h.Check)
@@ -86,7 +106,16 @@ func (h *Handler) Routes(assets fs.FS) http.Handler {
 	if err != nil {
 		panic("嵌入资源缺少 app/vue 目录: " + err.Error())
 	}
-	r.Handle("/*", http.FileServerFS(sub))
+	fileServer := http.FileServerFS(sub)
+	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 目录列表禁用（2026-09-29 安全加固）：/css/、/js/ 等子目录的文件名清单
+		// 不对外暴露；"/" 由 FileServer 正常回 index.html，页面路由不受影响。
+		if r.URL.Path != "/" && strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}))
 	return r
 }
 

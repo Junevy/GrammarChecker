@@ -1,5 +1,7 @@
 package store
 
+import "time"
+
 // Repository 数据访问的抽象契约：api 层（server/api）只依赖本接口，
 // 不感知底层是哪种数据库。当前唯一实现为 *Store（SQLite）；
 // 后续若更换 MySQL / PostgreSQL 等主流数据库，只需按同一契约新增实现，
@@ -17,6 +19,11 @@ package store
 // UPSERT 写法、自增主键语义、连接池策略）由各实现自行消化。
 type Repository interface {
 	Close() error
+
+	// ForUser 返回绑定到指定用户的视图（多用户数据隔离的入口）：
+	// 同一契约，业务数据仅在该用户范围内可见；uid=0 为单用户内置身份。
+	// 见 userscope.go。api 层每个请求开头调用一次。
+	ForUser(uid int64) Repository
 
 	// ---- 错词本 ----
 	ListWrongWords(f WrongWordFilter) ([]WrongWord, error)
@@ -48,13 +55,29 @@ type Repository interface {
 	DeleteAllCheckHistory() (int64, error)
 	ListTrendPoints(from, errType string) ([]TrendPoint, error)
 
-	// ---- 设置（KV）----
+	// ---- 设置（KV，全局共用）----
 	GetAllSettings() (map[string]string, error)
 	GetSetting(key string) (string, error)
 	SetSetting(key, value string) error
 
-	// ---- 成分说明字典（seed 预置，运行期只读）----
+	// ---- 成分说明字典（seed 预置，运行期只读，全局共用）----
 	GetCompInfo(role string) (*CompInfo, error)
+
+	// ---- 用户与会话（多用户体系，2026-09-29）----
+	// 全局语义：用户与会话不随 ForUser 视图隔离；
+	// 业务数据隔离由 ForUser 返回的用户视图承担（见 userscope.go）。
+	HasUsers() (bool, error)
+	CreateUser(u *User, password string) error
+	GetUserByID(id int64) (*User, error)
+	ListUsers() ([]User, error)
+	Authenticate(username, password string) (*User, error)
+	UpdateUserPassword(id int64, password string) error
+	DeleteUser(id int64) error
+	CreateSession(userID int64, ttl time.Duration) (token string, expiresAt time.Time, err error)
+	GetUserBySessionToken(token string) (*User, error)
+	DeleteSession(token string) error
+	DeleteExpiredSessions() (int64, error)
+	ClaimLegacyData(userID int64) (int64, error)
 }
 
 // 编译期断言：*Store 必须始终满足 Repository 契约，

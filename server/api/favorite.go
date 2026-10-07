@@ -19,7 +19,7 @@ func (h *Handler) FavoriteDiscrimination(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.SetDiscriminationFavorite(id, true)) {
+	if mapStoreErr(w, h.repo(r).SetDiscriminationFavorite(id, true)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -31,7 +31,7 @@ func (h *Handler) UnfavoriteDiscrimination(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.SetDiscriminationFavorite(id, false)) {
+	if mapStoreErr(w, h.repo(r).SetDiscriminationFavorite(id, false)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -43,7 +43,7 @@ func (h *Handler) FavoriteExpression(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.SetExpressionFavorite(id, true)) {
+	if mapStoreErr(w, h.repo(r).SetExpressionFavorite(id, true)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -55,7 +55,7 @@ func (h *Handler) UnfavoriteExpression(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.SetExpressionFavorite(id, false)) {
+	if mapStoreErr(w, h.repo(r).SetExpressionFavorite(id, false)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

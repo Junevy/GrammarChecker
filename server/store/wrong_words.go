@@ -26,8 +26,17 @@ type WrongWordFilter struct {
 
 // ListWrongWords 查询先前错误列表，按创建时间倒序。
 func (s *Store) ListWrongWords(f WrongWordFilter) ([]WrongWord, error) {
+	return s.listWrongWords(f, uidAll)
+}
+
+// listWrongWords 内部实现：uid = uidAll 时不按用户过滤，否则只返回该用户的记录。
+func (s *Store) listWrongWords(f WrongWordFilter, uid int64) ([]WrongWord, error) {
 	where := []string{"1 = 1"}
 	args := []any{}
+	if uid != uidAll {
+		where = append(where, "user_id = ?")
+		args = append(args, uid)
+	}
 	if f.Query != "" {
 		where = append(where, "word LIKE ?")
 		args = append(args, "%"+f.Query+"%")
@@ -70,13 +79,21 @@ func (s *Store) ListWrongWords(f WrongWordFilter) ([]WrongWord, error) {
 // InsertWrongWord 写入错词本（检查页「加入错词本」5s 倒计时结束后调用）。
 // 写入后回填 w.ID 与 w.CreatedAt。
 func (s *Store) InsertWrongWord(w *WrongWord) error {
+	return s.insertWrongWord(w, uidAll)
+}
+
+// insertWrongWord 内部实现：uid = uidAll 时不写归属（保持 0），否则写入该用户。
+func (s *Store) insertWrongWord(w *WrongWord, uid int64) error {
+	if uid == uidAll {
+		uid = 0
+	}
 	if w.CreatedAt == "" {
 		w.CreatedAt = nowISO()
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO wrong_words (word, error_type, original_sentence, corrected_sentence, analysis_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		w.Word, w.ErrorType, w.OriginalSentence, w.CorrectedSentence, w.AnalysisJSON, w.CreatedAt)
+		`INSERT INTO wrong_words (user_id, word, error_type, original_sentence, corrected_sentence, analysis_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		uid, w.Word, w.ErrorType, w.OriginalSentence, w.CorrectedSentence, w.AnalysisJSON, w.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("写入错词本失败: %w", err)
 	}

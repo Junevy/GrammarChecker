@@ -3,6 +3,7 @@
 *.test
 *.out
 *.syso
+dist/            # 云部署用的交叉编译产物（deploy/build-linux.sh 生成，上传服务器即可，不入库）
 
 # 本地数据 —— 含 API Key 与个人数据，严禁提交
 *.db
@@ -11,16 +12,22 @@ grammar.db-wal
 grammar.db-shm
 grammar.db-journal
 
-# 前端验证依赖（playwright-core，仅本机 E2E 用）
+# 前端验证依赖（playwright-core，仅本机 E2E 用）；根目录 package.json 为遗留 mock 产物，
+# 加 / 前缀限定根目录，避免误伤 electron/package.json
 node_modules/
-package.json
-package-lock.json
+/package.json
+/package-lock.json
+
+# Electron 壳构建产物
+electron/bin/
+dist-electron/
 
 # 验证 / 调试临时产物
 _verify_tmp/
 app/vue/_verify_tmp/
 _*.tmp
 _*.js.tmp
+_*.log
 test-results/
 playwright-report/
 

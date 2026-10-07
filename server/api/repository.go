@@ -14,7 +14,7 @@ import (
 // 先前错误列表：搜索 / 类型 / 日期三类条件 AND 组合（文档 6.2）。
 func (h *Handler) ListWrongWords(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	items, err := h.store.ListWrongWords(store.WrongWordFilter{
+	items, err := h.repo(r).ListWrongWords(store.WrongWordFilter{
 		Query: q.Get("q"),
 		Type:  q.Get("type"),
 		From:  q.Get("from"),
@@ -32,7 +32,7 @@ func (h *Handler) DeleteWrongWord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.DeleteWrongWord(id)) {
+	if mapStoreErr(w, h.repo(r).DeleteWrongWord(id)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -40,7 +40,7 @@ func (h *Handler) DeleteWrongWord(w http.ResponseWriter, r *http.Request) {
 
 // ListSentences GET /api/sentences?q= —— 例句列表（搜索例句，文档 6.3）。
 func (h *Handler) ListSentences(w http.ResponseWriter, r *http.Request) {
-	items, err := h.store.ListSentences(r.URL.Query().Get("q"))
+	items, err := h.repo(r).ListSentences(r.URL.Query().Get("q"))
 	if mapStoreErr(w, err) {
 		return
 	}
@@ -78,7 +78,7 @@ func (h *Handler) AddSentence(w http.ResponseWriter, r *http.Request) {
 		Source:       src,
 		AnalysisJSON: body.AnalysisJSON,
 	}
-	if err := h.store.InsertSentence(&x); err != nil {
+	if err := h.repo(r).InsertSentence(&x); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -91,7 +91,7 @@ func (h *Handler) DeleteSentence(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.DeleteSentence(id)) {
+	if mapStoreErr(w, h.repo(r).DeleteSentence(id)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -121,7 +121,7 @@ func (h *Handler) AddWrongWord(w http.ResponseWriter, r *http.Request) {
 		CorrectedSentence: body.CorrectedSentence,
 		AnalysisJSON:      body.AnalysisJSON,
 	}
-	if err := h.store.InsertWrongWord(&x); err != nil {
+	if err := h.repo(r).InsertWrongWord(&x); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}

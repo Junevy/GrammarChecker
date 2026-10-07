@@ -21,8 +21,17 @@ type Discrimination struct {
 // ListDiscriminations 辨析收藏/历史列表：q 搜索单词、日期 AND 筛选，时间倒序。
 // favorite 非 nil 时按收藏状态过滤（nil = 不过滤）。
 func (s *Store) ListDiscriminations(q, from, to string, favorite *bool) ([]Discrimination, error) {
+	return s.listDiscriminations(q, from, to, favorite, uidAll)
+}
+
+// listDiscriminations 内部实现：uid = uidAll 时不按用户过滤，否则只返回该用户的记录。
+func (s *Store) listDiscriminations(q, from, to string, favorite *bool, uid int64) ([]Discrimination, error) {
 	where := []string{"1 = 1"}
 	args := []any{}
+	if uid != uidAll {
+		where = append(where, "user_id = ?")
+		args = append(args, uid)
+	}
 	if q != "" {
 		// 同搜单词与近义词列表（api/readme.md §2.6：搜索单词 / 近义词）
 		where = append(where, "(word LIKE ? OR synonyms_json LIKE ?)")
@@ -68,10 +77,20 @@ func (s *Store) ListDiscriminations(q, from, to string, favorite *bool) ([]Discr
 // FindDiscriminationByWord 取某单词最近一次辨析记录（「辨析复用历史记录」开关命中时使用）。
 // 未命中返回 ErrNotFound。
 func (s *Store) FindDiscriminationByWord(word string) (*Discrimination, error) {
-	row := s.db.QueryRow(
-		`SELECT id, word, synonyms_json, result_json, favorite, created_at
-		 FROM discriminations WHERE word = ?
-		 ORDER BY created_at DESC, id DESC LIMIT 1`, word)
+	return s.findDiscriminationByWord(word, uidAll)
+}
+
+// findDiscriminationByWord 内部实现：uid = uidAll 时不按用户过滤，否则只在该用户记录内查找。
+func (s *Store) findDiscriminationByWord(word string, uid int64) (*Discrimination, error) {
+	query := `SELECT id, word, synonyms_json, result_json, favorite, created_at
+		FROM discriminations WHERE word = ?`
+	args := []any{word}
+	if uid != uidAll {
+		query += " AND user_id = ?"
+		args = append(args, uid)
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+	row := s.db.QueryRow(query, args...)
 	var d Discrimination
 	if err := row.Scan(&d.ID, &d.Word, &d.SynonymsJSON, &d.ResultJSON, &d.Favorite, &d.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -84,13 +103,21 @@ func (s *Store) FindDiscriminationByWord(word string) (*Discrimination, error) {
 
 // InsertDiscrimination 写入辨析记录（/api/discriminate 接通 LLM 后调用）。
 func (s *Store) InsertDiscrimination(d *Discrimination) error {
+	return s.insertDiscrimination(d, uidAll)
+}
+
+// insertDiscrimination 内部实现：uid = uidAll 时不写归属（保持 0），否则写入该用户。
+func (s *Store) insertDiscrimination(d *Discrimination, uid int64) error {
+	if uid == uidAll {
+		uid = 0
+	}
 	if d.CreatedAt == "" {
 		d.CreatedAt = nowISO()
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO discriminations (word, synonyms_json, result_json, created_at)
-		 VALUES (?, ?, ?, ?)`,
-		d.Word, d.SynonymsJSON, d.ResultJSON, d.CreatedAt)
+		`INSERT INTO discriminations (user_id, word, synonyms_json, result_json, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		uid, d.Word, d.SynonymsJSON, d.ResultJSON, d.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("写入辨析记录失败: %w", err)
 	}

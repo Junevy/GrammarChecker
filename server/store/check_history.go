@@ -18,14 +18,24 @@ type CheckHistory struct {
 
 // ListCheckHistory 最近的检查历史，时间倒序；limit <= 0 时默认 20。
 func (s *Store) ListCheckHistory(limit int) ([]CheckHistory, error) {
+	return s.listCheckHistory(limit, uidAll)
+}
+
+// listCheckHistory 内部实现：uid = uidAll 时不按用户过滤，否则只返回该用户的记录。
+func (s *Store) listCheckHistory(limit int, uid int64) ([]CheckHistory, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(
-		`SELECT id, sentence, error_count, result_json, created_at
-		 FROM check_history
-		 ORDER BY created_at DESC, id DESC
-		 LIMIT ?`, limit)
+	query := `SELECT id, sentence, error_count, result_json, created_at FROM check_history`
+	args := []any{}
+	if uid != uidAll {
+		query += " WHERE user_id = ?"
+		args = append(args, uid)
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询检查历史失败: %w", err)
 	}
@@ -44,13 +54,21 @@ func (s *Store) ListCheckHistory(limit int) ([]CheckHistory, error) {
 
 // InsertCheckHistory 写入检查历史（/api/check 完成后自动调用，文档 8.1 步骤 3）。
 func (s *Store) InsertCheckHistory(x *CheckHistory) error {
+	return s.insertCheckHistory(x, uidAll)
+}
+
+// insertCheckHistory 内部实现：uid = uidAll 时不写归属（保持 0），否则写入该用户。
+func (s *Store) insertCheckHistory(x *CheckHistory, uid int64) error {
+	if uid == uidAll {
+		uid = 0
+	}
 	if x.CreatedAt == "" {
 		x.CreatedAt = nowISO()
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO check_history (sentence, error_count, result_json, created_at)
-		 VALUES (?, ?, ?, ?)`,
-		x.Sentence, x.ErrorCount, x.ResultJSON, x.CreatedAt)
+		`INSERT INTO check_history (user_id, sentence, error_count, result_json, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		uid, x.Sentence, x.ErrorCount, x.ResultJSON, x.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("写入检查历史失败: %w", err)
 	}
@@ -80,11 +98,20 @@ type TrendPoint struct {
 // 无检查记录的日期不产生数据点，由前端按需补齐。
 // 个人工具数据量小，全量拉取后在 Go 层过滤，避免依赖 SQLite JSON 扩展。
 func (s *Store) ListTrendPoints(from, errType string) ([]TrendPoint, error) {
-	rows, err := s.db.Query(
-		`SELECT substr(created_at, 1, 10) AS day, error_count, result_json
-		 FROM check_history
-		 WHERE substr(created_at, 1, 10) >= ?
-		 ORDER BY created_at`, from)
+	return s.listTrendPoints(from, errType, uidAll)
+}
+
+// listTrendPoints 内部实现：uid = uidAll 时不按用户过滤，否则只统计该用户的记录。
+func (s *Store) listTrendPoints(from, errType string, uid int64) ([]TrendPoint, error) {
+	query := `SELECT substr(created_at, 1, 10) AS day, error_count, result_json
+		FROM check_history WHERE substr(created_at, 1, 10) >= ?`
+	args := []any{from}
+	if uid != uidAll {
+		query += " AND user_id = ?"
+		args = append(args, uid)
+	}
+	query += " ORDER BY created_at"
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询趋势数据失败: %w", err)
 	}

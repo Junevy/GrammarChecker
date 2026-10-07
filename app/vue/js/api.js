@@ -16,8 +16,8 @@ const API = {
         body: body !== undefined ? JSON.stringify(body) : undefined
       });
     } catch (e) {
-      /* 网络层失败：后端未启动 / file:// 直开 */
-      throw { code: 'network_error', message: '无法连接后端服务（127.0.0.1:8899），请先启动 GrammarChecker 后端' };
+      /* 网络层失败：后端未启动 / file:// 直开 / 断网 */
+      throw { code: 'network_error', message: '无法连接后端服务，请确认 GrammarChecker 已启动、网络可达' };
     }
     if (resp.status === 204) return null;
     let data = null;
@@ -29,8 +29,14 @@ const API = {
       throw { code: 'bad_response', message: '后端响应不是合法 JSON，请检查后端版本/日志' };
     }
     if (!resp.ok) {
+      /* 多用户模式下会话过期/未登录（见 api/README.md §9）：
+         广播全局事件，由应用切换到登录视图（登录接口自身的 401 不广播） */
+      const code = (data && data.code) || 'internal_error';
+      if (resp.status === 401 && code === 'unauthorized' && path !== '/api/auth/login') {
+        window.dispatchEvent(new CustomEvent('gc:unauthorized'));
+      }
       throw {
-        code: (data && data.code) || 'internal_error',
+        code,
         message: (data && data.message) || ('请求失败（HTTP ' + resp.status + '）')
       };
     }
@@ -86,5 +92,21 @@ const API = {
   /* §7.1 成分说明（role 精确匹配，需 URL 编码） */
   compInfo(role)                  { return this.get('/api/comp-info?role=' + encodeURIComponent(role)); },
   /* §7.2 LLM 用法示例 [已实现占位] */
-  usageExample(role, sentence)    { return this.post('/api/llm/usage-example', { role, sentence }); }
+  usageExample(role, sentence)    { return this.post('/api/llm/usage-example', { role, sentence }); },
+
+  /* ---- §9 认证与用户管理（2026-09-29 多用户体系） ---- */
+
+  /* §9.1 当前身份：多用户模式未登录时 {username:null, auth_required:true} */
+  me()                            { return this.get('/api/auth/me'); },
+  /* §9.2 登录：成功后服务端下发 gc_session Cookie（浏览器自动携带） */
+  login(username, password)       { return this.post('/api/auth/login', { username, password }); },
+  /* §9.3 退出登录 */
+  logout()                        { return this.post('/api/auth/logout'); },
+  /* §9.4 本人修改密码 */
+  changePassword(oldPw, newPw)    { return this.post('/api/auth/password', { old_password: oldPw, new_password: newPw }); },
+  /* §9.5 用户管理（仅管理员） */
+  users()                         { return this.get('/api/users'); },
+  createUser(username, password, isAdmin) { return this.post('/api/users', { username, password, is_admin: !!isAdmin }); },
+  deleteUser(id)                  { return this.del('/api/users/' + id); },
+  resetUserPassword(id, password) { return this.post('/api/users/' + id + '/password', { password }); }
 };

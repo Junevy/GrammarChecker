@@ -19,7 +19,7 @@ func (h *Handler) ListDiscriminations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := h.store.ListDiscriminations(q.Get("q"), q.Get("from"), q.Get("to"), fav)
+	items, err := h.repo(r).ListDiscriminations(q.Get("q"), q.Get("from"), q.Get("to"), fav)
 	if mapStoreErr(w, err) {
 		return
 	}
@@ -33,15 +33,15 @@ func (h *Handler) DeleteDiscrimination(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if mapStoreErr(w, h.store.DeleteDiscrimination(id)) {
+	if mapStoreErr(w, h.repo(r).DeleteDiscrimination(id)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // ClearDiscriminationHistory DELETE /api/discrimination-history —— 清空辨析历史。
-func (h *Handler) ClearDiscriminationHistory(w http.ResponseWriter, _ *http.Request) {
-	if _, err := h.store.DeleteAllDiscriminations(); err != nil {
+func (h *Handler) ClearDiscriminationHistory(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.repo(r).DeleteAllDiscriminations(); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -54,7 +54,7 @@ func (h *Handler) ListExpressionHistory(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	items, err := h.store.ListExpressions(parseLimit(r, 20, 200), fav)
+	items, err := h.repo(r).ListExpressions(parseLimit(r, 20, 200), fav)
 	if mapStoreErr(w, err) {
 		return
 	}
@@ -62,8 +62,8 @@ func (h *Handler) ListExpressionHistory(w http.ResponseWriter, r *http.Request) 
 }
 
 // ClearExpressionHistory DELETE /api/expression-history —— 清空表达历史。
-func (h *Handler) ClearExpressionHistory(w http.ResponseWriter, _ *http.Request) {
-	if _, err := h.store.DeleteAllExpressions(); err != nil {
+func (h *Handler) ClearExpressionHistory(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.repo(r).DeleteAllExpressions(); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -73,7 +73,7 @@ func (h *Handler) ClearExpressionHistory(w http.ResponseWriter, _ *http.Request)
 // ListCheckHistory GET /api/history/check?limit= —— 最近的检查历史。
 // 历史记录卡展示 5 条（文档 6.1），前端按需传 limit。
 func (h *Handler) ListCheckHistory(w http.ResponseWriter, r *http.Request) {
-	items, err := h.store.ListCheckHistory(parseLimit(r, 20, 200))
+	items, err := h.repo(r).ListCheckHistory(parseLimit(r, 20, 200))
 	if mapStoreErr(w, err) {
 		return
 	}
@@ -81,8 +81,8 @@ func (h *Handler) ListCheckHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 // ClearCheckHistory DELETE /api/history/check —— 清空检查历史。
-func (h *Handler) ClearCheckHistory(w http.ResponseWriter, _ *http.Request) {
-	if _, err := h.store.DeleteAllCheckHistory(); err != nil {
+func (h *Handler) ClearCheckHistory(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.repo(r).DeleteAllCheckHistory(); err != nil {
 		fail(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -122,7 +122,7 @@ func (h *Handler) Trends(w http.ResponseWriter, r *http.Request) {
 	}
 	from := time.Now().AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 
-	points, err := h.store.ListTrendPoints(from, r.URL.Query().Get("type"))
+	points, err := h.repo(r).ListTrendPoints(from, r.URL.Query().Get("type"))
 	if mapStoreErr(w, err) {
 		return
 	}

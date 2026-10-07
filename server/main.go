@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +31,8 @@ import (
 	"grammarchecker/server/llm"
 	"grammarchecker/server/store"
 	"grammarchecker/server/tray"
+
+	"golang.org/x/term"
 )
 
 func main() {
@@ -40,6 +43,9 @@ func main() {
 		dbPath    = flag.String("db", "", "SQLite 文件路径（默认：可执行文件同目录 grammar.db）")
 		noBrowser = flag.Bool("no-browser", false, "启动后不自动打开浏览器")
 		noTray    = flag.Bool("no-tray", false, "以控制台模式运行（默认启用系统托盘）")
+		addUser   = flag.String("add-user", "", "创建用户后退出（不启动服务），配合 -admin / -password；用于部署形态引导首个管理员账号")
+		isAdmin   = flag.Bool("admin", false, "配合 -add-user：创建的用户为管理员")
+		password  = flag.String("password", "", "配合 -add-user：直接指定密码（缺省时交互式输入，不回显）")
 	)
 	flag.Parse()
 
@@ -50,8 +56,27 @@ func main() {
 	}
 	defer st.Close()
 
+	// 账号管理 CLI：创建用户后立即退出。首个用户会自动认领
+	// 单用户时代的历史数据（user_id=0 → 该用户），见 store.ClaimLegacyData。
+	if *addUser != "" {
+		if err := runAddUser(st, *addUser, *password, *isAdmin); err != nil {
+			log.Fatalf("创建用户失败: %v", err)
+		}
+		return
+	}
+
 	// 装配 LLM 客户端与 HTTP 路由
 	llmClient := llm.NewClient(llm.DefaultConfig())
+
+	// 安全告警（2026-09-29 加固）：无用户 = 单用户开放模式（API 完全无鉴权），
+	// 此时若监听非回环地址，等于把数据与 LLM 额度向所在网络敞开——明确提示而非静默。
+	if host, _, err := net.SplitHostPort(*addr); err == nil &&
+		host != "127.0.0.1" && host != "::1" && host != "localhost" {
+		if hasUsers, err := st.HasUsers(); err == nil && !hasUsers {
+			log.Printf("安全警告: 监听地址 %s 为非回环地址，且尚未创建任何用户（接口完全开放）。"+
+				"请尽快执行 -add-user 创建账号开启登录保护，或改回 127.0.0.1。", *addr)
+		}
+	}
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           api.NewHandler(st, llmClient).Routes(assets.FS),
@@ -119,6 +144,74 @@ func main() {
 		OnQuit: func() { shutdown("收到退出请求") },
 	})
 	log.Println("已退出")
+}
+
+// runAddUser -add-user CLI 的执行体：校验用户名/密码 → 首个用户认领旧数据 → 落库。
+// 密码来源：-password 参数（便于脚本）；缺省时终端交互式输入两次（不回显）。
+func runAddUser(st *store.Store, username, password string, admin bool) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return fmt.Errorf("用户名不能为空")
+	}
+	if len(password) < 6 {
+		if password != "" {
+			return fmt.Errorf("密码长度至少 6 位")
+		}
+		// 交互式输入（不回显）；非终端环境（如管道）直接报错
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return fmt.Errorf("非终端环境必须用 -password 指定密码")
+		}
+		fmt.Printf("为 %s 设置密码（至少 6 位，输入不回显）:\n", username)
+		pw1, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return fmt.Errorf("读取密码失败: %w", err)
+		}
+		fmt.Println("再次输入以确认:")
+		pw2, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return fmt.Errorf("读取密码失败: %w", err)
+		}
+		fmt.Println()
+		if string(pw1) != string(pw2) {
+			return fmt.Errorf("两次输入的密码不一致")
+		}
+		password = string(pw1)
+		if len(password) < 6 {
+			return fmt.Errorf("密码长度至少 6 位")
+		}
+	}
+
+	u := &store.User{Username: username, IsAdmin: admin}
+	if err := st.CreateUser(u, password); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return fmt.Errorf("用户名 %s 已存在", username)
+		}
+		return err
+	}
+	// 首个用户 = 多用户模式开启点：把单用户时代（user_id=0）的数据划归该用户
+	if has, err := firstUserNow(st); err == nil && has {
+		n, err := st.ClaimLegacyData(u.ID)
+		if err != nil {
+			log.Printf("警告：旧数据认领失败: %v", err)
+		} else if n > 0 {
+			log.Printf("已将 %d 条历史数据划归用户 %s", n, username)
+		}
+	}
+	role := "普通用户"
+	if admin {
+		role = "管理员"
+	}
+	log.Printf("用户 %s（%s，ID=%d）创建成功", username, role, u.ID)
+	return nil
+}
+
+// firstUserNow 判断刚创建的是否为库中首个用户（仅当用户总数为 1）。
+func firstUserNow(st *store.Store) (bool, error) {
+	users, err := st.ListUsers()
+	if err != nil {
+		return false, err
+	}
+	return len(users) == 1, nil
 }
 
 // openBrowser 调用系统默认浏览器打开 URL；失败静默处理（不影响服务本身）。
