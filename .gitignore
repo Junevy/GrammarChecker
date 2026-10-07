@@ -3,14 +3,18 @@
 *.test
 *.out
 *.syso
-dist/            # 云部署用的交叉编译产物（deploy/build-linux.sh 生成，上传服务器即可，不入库）
+# 云部署用的交叉编译产物（deploy/build-linux.sh 生成，上传服务器即可，不入库）
+# 注意：目录名与行内注释必须分行，否则Git 会把整行当模式，忽略规则静默失效
+dist/
 
 # 本地数据 —— 含 API Key 与个人数据，严禁提交
 *.db
 grammar.db
-grammar.db-wal
-grammar.db-shm
-grammar.db-journal
+# SQLite WAL 边车文件：文件名形如 xxx.db-wal / xxx.db-shm，
+# 不被上面的 *.db 匹配（后缀不是 .db），必须单独列出，否则会被提交
+*.db-wal
+*.db-shm
+*.db-journal
 
 # 前端验证依赖（playwright-core，仅本机 E2E 用）；根目录 package.json 为遗留 mock 产物，
 # 加 / 前缀限定根目录，避免误伤 electron/package.json
@@ -30,6 +34,14 @@ _*.js.tmp
 _*.log
 test-results/
 playwright-report/
+
+# 根目录下 _<name> 形式的临时/构建产物（_linux_build_test 等无扩展名 ELF 可执行文件）
+# 注意：不能只写 _*/ —— 那会误伤 _verify_tmp/ 之外的正常文件，且历史上曾误提交 20MB 二进制
+/_linux_build_test
+/_build*
+
+# AI 工具本地工作区数据（会话计划等），非项目交付物
+.zcode/
 
 # WorkBuddy 工作区数据与个人工作日志
 .workbuddy/
