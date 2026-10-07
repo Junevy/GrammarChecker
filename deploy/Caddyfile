@@ -12,15 +12,35 @@
 #   认证由后端登录页完成（会话 Cookie，见 README「账号与认证」），
 #   本文件不再配置 Caddy basic_auth——双层认证会导致两次登录，已移除。
 #   手机浏览器首次访问时点「高级 → 继续前往」接受自签证书即可。
+#
+# ── 证书配置说明（2026-10-07 实测修正，务必按此执行）────────────────────
+# 为什么不用 `tls internal`：
+#   1) `:443` 不带主机名时 Caddy **不会签发站点证书**（只生成 CA 根证书），
+#      对外握手必然失败；
+#   2) 改成 `https://<IP>` 后 Caddy 能签发，但**仅对携带 SNI 的请求生效**。
+#      而手机浏览器访问 IP 地址时通常**不发送 SNI**，Caddy 无法匹配站点 →
+#      握手被拒（TLSV1_ALERT_INTERNAL_ERROR / alert number 80）。
+#      该现象已实测确认：不带 SNI 失败、带 -servername 成功。
+#
+# 正确做法：显式自签一张覆盖 IP 的证书并直接加载，两种访问方式都能握手成功。
+# 生成命令（SAN 必须含 IP，否则证书校验失败）：
+#   openssl req -x509 -newkey rsa:2048 -nodes -keyout /etc/caddy/gc.key \
+#     -out /etc/caddy/gc.crt -days 3650 -subj "/CN=<服务器IP>" \
+#     -addext "subjectAltName=IP:<服务器IP>,DNS:localhost,IP:127.0.0.1"
+#   chown caddy:caddy /etc/caddy/gc.key /etc/caddy/gc.crt && chmod 640 /etc/caddy/gc.key
+# 注意私钥属主必须是 caddy，否则 Caddy 报 permission denied 起不来。
+#
+# 无 SNI 验证方法（不带 -servername）：
+#   openssl s_client -connect <服务器IP>:443 </dev/null | grep 'Cipher is'
 
 # HTTP 一律跳转到 HTTPS
 :80 {
 	redir https://{host}{uri} permanent
 }
 
-:443 {
-	# 自签证书（Caddy 内置 CA）
-	tls internal
+https://115.159.95.58, :443 {
+	# 显式自签证书（含 IP SAN）——覆盖带 SNI 与不带 SNI 两种访问方式
+	tls /etc/caddy/gc.crt /etc/caddy/gc.key
 
 	# 反代到仅监听回环的后端（见 grammarchecker.service 的 -addr 参数）
 	reverse_proxy 127.0.0.1:8899
